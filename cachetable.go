@@ -37,6 +37,8 @@ type CacheTable struct {
 	addedItem []func(item *CacheItem)
 	// Callback method triggered before deleting an item from the cache.
 	aboutToDeleteItem []func(item *CacheItem)
+	// expire check by createdtime
+	expireByCreateTime bool
 }
 
 // Count returns how many items are currently stored in the cache.
@@ -142,19 +144,23 @@ func (table *CacheTable) expirationCheck() {
 		// Cache values so we don't keep blocking the mutex.
 		item.RLock()
 		lifeSpan := item.lifeSpan
-		accessedOn := item.accessedOn
+		checkTime := item.accessedOn
+		if table.expireByCreateTime {
+			checkTime = item.createdOn
+		}
+		//accessedOn := item.accessedOn
 		item.RUnlock()
 
 		if lifeSpan == 0 {
 			continue
 		}
-		if now.Sub(accessedOn) >= lifeSpan {
+		if now.Sub(checkTime) >= lifeSpan {
 			// Item has excessed its lifespan.
 			table.deleteInternal(key)
 		} else {
 			// Find the item chronologically closest to its end-of-lifespan.
-			if smallestDuration == 0 || lifeSpan-now.Sub(accessedOn) < smallestDuration {
-				smallestDuration = lifeSpan - now.Sub(accessedOn)
+			if smallestDuration == 0 || lifeSpan-now.Sub(checkTime) < smallestDuration {
+				smallestDuration = lifeSpan - now.Sub(checkTime)
 			}
 		}
 	}
