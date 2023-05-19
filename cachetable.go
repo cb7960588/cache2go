@@ -285,11 +285,16 @@ func (table *CacheTable) NotFoundAdd(key interface{}, lifeSpan time.Duration, da
 // pass additional arguments to your DataLoader callback function.
 func (table *CacheTable) Value(key interface{}, args ...interface{}) (*CacheItem, error) {
 	table.RLock()
+	expireByCreateTime := table.expireByCreateTime
 	r, ok := table.items[key]
 	loadData := table.loadData
 	table.RUnlock()
 
 	if ok {
+		//expireByCreateTime, needn't keepAlive
+		if expireByCreateTime {
+			return r, nil
+		}
 		// Update access counter and timestamp.
 		r.KeepAlive()
 		return r, nil
