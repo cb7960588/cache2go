@@ -31,9 +31,13 @@ func Cache(table string, expireByCreateTime bool) *CacheTable {
 		if !ok {
 			t = &CacheTable{
 				name:               table,
-				items:              make(map[interface{}]*CacheItem),
 				expireByCreateTime: expireByCreateTime,
+				hash:               newDefaultHasher(),
+				shards:             make([]shard, 1024),
+				shardLock:          make([]sync.RWMutex, 1024),
+				shardMask:          1024 - 1,
 			}
+
 			cache[table] = t
 		}
 		mutex.Unlock()
