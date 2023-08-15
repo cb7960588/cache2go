@@ -15,13 +15,14 @@ import (
 )
 
 var (
-	shardNum = 1024
-	k        = "testkey"
-	v        = "testvalue"
+	shardNum      = 1024
+	cleanInterval = 5 * time.Second
+	k             = "testkey"
+	v             = "testvalue"
 )
 
 func TestCacheNew(t *testing.T) {
-	table := Cache(context.Background(), "testCacheNew", shardNum)
+	table := Cache(context.Background(), "testCacheNew", shardNum, cleanInterval)
 	table.Add(k+"_1", 5*time.Second, v)
 
 	if v, err := table.Value(k + "_1"); err != nil {
@@ -51,7 +52,7 @@ ok      github.com/cb7960588/cache2go   2.216s
 */
 func BenchmarkCacheNew(b *testing.B) {
 	b.ResetTimer()
-	table := Cache(context.Background(), "testCacheNew", shardNum)
+	table := Cache(context.Background(), "testCacheNew", shardNum, cleanInterval)
 
 	for i := 0; i < b.N; i++ {
 		key := k + "_1" + strconv.Itoa(i)
@@ -90,8 +91,6 @@ PASS
 ok      github.com/cb7960588/cache2go   65.677s
 
 
-
-
 [after]
 go test -bench=CacheNewParallel -run=none                                                                                                                         ░▒▓ ✔  took 5s   system   at 11:32:08  
 goos: darwin
@@ -112,7 +111,7 @@ BenchmarkCacheNewParallel-12            31105671               413.2 ns/op
 PASS
 ok      github.com/cb7960588/cache2go   13.565s
 
-[after: clean]
+[after: clean-10s]
 go test -bench=CacheNewParallel -run=none -benchtime=20s                                                                                                       ░▒▓ ✔  took 15s   system   at 11:59:02  
 goos: darwin
 goarch: amd64
@@ -122,10 +121,20 @@ BenchmarkCacheNewParallel-12            81961603               453.3 ns/op
 PASS
 ok      github.com/cb7960588/cache2go   38.620s
 
+[after: clean-5s]
+go test -bench=CacheNewParallel -run=none -benchtime=20s                                                                                                           ░▒▓ 1 ✘  took 8s   system   at 14:29:18  
+goos: darwin
+goarch: amd64
+pkg: github.com/cb7960588/cache2go
+cpu: Intel(R) Core(TM) i7-8750H CPU @ 2.20GHz
+BenchmarkCacheNewParallel-12            71451643               466.4 ns/op
+PASS
+ok      github.com/cb7960588/cache2go   34.394s
+
 */
 func BenchmarkCacheNewParallel(b *testing.B) {
 	b.ResetTimer()
-	table := Cache(context.Background(), "testCacheNew", shardNum)
+	table := Cache(context.Background(), "testCacheNew", shardNum, cleanInterval)
 
 	b.RunParallel(func(pb *testing.PB) {
 		i := 1

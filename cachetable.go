@@ -83,14 +83,7 @@ func (table *CacheTable) Add(key interface{}, lifeSpan time.Duration, data inter
 func (table *CacheTable) getShard(hashedKey uint64) (shard shard) {
 	lock := table.getShardLock(hashedKey)
 	lock.RLock()
-	if table.shards[hashedKey&table.shardMask] == nil {
-		lock.RUnlock()
-		lock.Lock()
-		table.shards[hashedKey&table.shardMask] = make(map[interface{}]*CacheItem)
-		lock.Unlock()
-	} else {
-		lock.RUnlock()
-	}
+	defer lock.RUnlock()
 
 	return table.shards[hashedKey&table.shardMask]
 }

@@ -21,7 +21,7 @@ var (
 
 // Cache returns the existing cache table with given name or creates a new one
 // if the table does not exist yet.
-func Cache(ctx context.Context, table string, shardNum int) *CacheTable {
+func Cache(ctx context.Context, table string, shardNum int, cleanInterval time.Duration) *CacheTable {
 	mutex.RLock()
 	t, ok := cache[table]
 	mutex.RUnlock()
@@ -39,11 +39,16 @@ func Cache(ctx context.Context, table string, shardNum int) *CacheTable {
 				shardLock:          make([]sync.RWMutex, shardNum),
 				shardMask:          uint64(shardNum - 1),
 				deleteChan:         make(chan interface{}, 1024*10*5),
+				cleanupInterval:    cleanInterval,
+			}
+
+			for i := 0; i < shardNum; i++ {
+				t.shards[i] = make(map[interface{}]*CacheItem)
 			}
 
 			// 定时清理过期缓存
 			go func(t *CacheTable, c context.Context) {
-				ticker := time.NewTicker(10 * time.Second)
+				ticker := time.NewTicker(cleanInterval)
 				for {
 					select {
 					case <-ctx.Done():
