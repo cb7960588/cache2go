@@ -44,6 +44,9 @@ type CacheTable struct {
 	addedItem []func(item *CacheItem)
 	// expire check by createdtime
 	expireByCreateTime bool
+
+	deleteChan chan interface{} // key
+	isStop     bool
 }
 
 // SetLogger sets the logger to be used by this cache table.
@@ -97,7 +100,6 @@ func (table *CacheTable) getShardLock(hashedKey uint64) (lock *sync.RWMutex) {
 }
 
 func (table *CacheTable) deleteInternal(key interface{}) (*CacheItem, error) {
-
 	keyBytes, _ := json.Marshal(key)
 	hashedKey := table.hash.Sum64(Bytes2String(keyBytes))
 	shardTable := table.getShard(hashedKey)
@@ -110,7 +112,7 @@ func (table *CacheTable) deleteInternal(key interface{}) (*CacheItem, error) {
 	}
 
 	lock.Lock()
-	defer r.Unlock()
+	defer lock.Unlock()
 	table.log("Deleting item with key", key, "created on", r.createdOn, "and hit", r.accessCount, "times from table", table.name)
 	delete(shardTable, key)
 
@@ -119,9 +121,6 @@ func (table *CacheTable) deleteInternal(key interface{}) (*CacheItem, error) {
 
 // Delete an item from the cache.
 func (table *CacheTable) Delete(key interface{}) (*CacheItem, error) {
-	table.Lock()
-	defer table.Unlock()
-
 	return table.deleteInternal(key)
 }
 
@@ -139,7 +138,7 @@ func (table *CacheTable) Value(key interface{}, args ...interface{}) (*CacheItem
 	if ok {
 		// 过期删除元素
 		if time.Now().Sub(r.createdOn) > r.lifeSpan {
-			go table.deleteInternal(key)
+			table.deleteChan <- key
 			return nil, ErrKeyNotFound
 		}
 
@@ -158,6 +157,15 @@ func (table *CacheTable) log(v ...interface{}) {
 	}
 
 	table.logger.Println(v...)
+}
+
+func (table *CacheTable) Stop() {
+	table.Lock()
+	defer table.Unlock()
+	if !table.isStop {
+		close(table.deleteChan)
+		table.isStop = true
+	}
 }
 
 func Bytes2String(b []byte) string {
