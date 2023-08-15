@@ -28,8 +28,6 @@ func TestCacheNew(t *testing.T) {
 		t.Log(v.Data().(string))
 	}
 
-	time.Sleep(5 * time.Second)
-
 	if v, err := table.Value(k + "_1"); err != nil {
 		t.Errorf("err:%v", err)
 	} else {
@@ -75,6 +73,17 @@ cpu: Intel(R) Core(TM) i7-8750H CPU @ 2.20GHz
 BenchmarkCacheNewParallel-12             3694575               336.5 ns/op
 PASS
 ok      github.com/cb7960588/cache2go   2.136s
+
+
+ go test -bench=CacheNewParallel -run=none -benchtime=8s                                                                                                         ░▒▓ ✔  took 8s   system   at 11:39:28  
+goos: darwin
+goarch: amd64
+pkg: github.com/cb7960588/cache2go
+cpu: Intel(R) Core(TM) i7-8750H CPU @ 2.20GHz
+BenchmarkCacheNewParallel-12            31105671               413.2 ns/op
+PASS
+ok      github.com/cb7960588/cache2go   13.565s
+
 */
 func BenchmarkCacheNewParallel(b *testing.B) {
 	b.ResetTimer()
@@ -84,7 +93,7 @@ func BenchmarkCacheNewParallel(b *testing.B) {
 		i := 1
 		for pb.Next() {
 			key := k + "_1" + strconv.Itoa(i)
-			table.Add(key, 10*time.Second, v)
+			table.Add(key, 3*time.Second, v)
 
 			if _, err := table.Value(key); err != nil {
 				b.Fatalf("err:%v", err)
