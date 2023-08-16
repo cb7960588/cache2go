@@ -58,7 +58,7 @@ func Cache(ctx context.Context, table string, shardNum int, cleanInterval time.D
 						for i, sad := range t.shards {
 							t.shardLock[i].RLock()
 							for key, r := range sad {
-								if now.Sub(r.createdOn) > r.lifeSpan {
+								if now.Sub(r.createdOn).Seconds() > r.lifeSpan.Seconds() {
 									t.deleteChan <- key
 								}
 							}
