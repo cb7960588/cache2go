@@ -129,12 +129,6 @@ func (table *CacheTable) Value(key interface{}, args ...interface{}) (*CacheItem
 	lock.RUnlock()
 
 	if ok {
-		// 过期删除元素
-		if time.Now().Sub(r.createdOn) > r.lifeSpan {
-			table.deleteChan <- key
-			return nil, ErrKeyNotFound
-		}
-
 		// 正常返回结果
 		return r, nil
 	}

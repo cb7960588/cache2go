@@ -54,10 +54,11 @@ func Cache(ctx context.Context, table string, shardNum int, cleanInterval time.D
 					case <-ctx.Done():
 						ticker.Stop()
 					case <-ticker.C:
+						now := time.Now()
 						for i, sad := range t.shards {
 							t.shardLock[i].RLock()
 							for key, r := range sad {
-								if time.Now().Sub(r.createdOn) > r.lifeSpan {
+								if now.Sub(r.createdOn) > r.lifeSpan {
 									t.deleteChan <- key
 								}
 							}
