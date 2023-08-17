@@ -47,12 +47,15 @@ func Cache(ctx context.Context, table string, shardNum int, cleanInterval time.D
 			}
 
 			// 定时清理过期缓存
-			go func(t *CacheTable, c context.Context) {
+			go func(t *CacheTable, ctx context.Context) {
 				ticker := time.NewTicker(cleanInterval)
+				reBundleTicker := time.NewTicker(30 * time.Minute)
 				for {
 					select {
 					case <-ctx.Done():
 						ticker.Stop()
+						reBundleTicker.Stop()
+						return
 					case <-ticker.C:
 						now := time.Now()
 						for i, sad := range t.shards {
@@ -64,16 +67,28 @@ func Cache(ctx context.Context, table string, shardNum int, cleanInterval time.D
 							}
 							t.shardLock[i].RUnlock()
 						}
+					case <-reBundleTicker.C:
+						// 为了释放map内存
+						for i, sad := range t.shards {
+							t.shardLock[i].Lock()
+							nm := make(shard, len(sad))
+							for key, r := range sad {
+								nm[key] = r
+							}
+							t.shards[i] = nm
+							t.shardLock[i].Unlock()
+						}
 					}
 				}
 			}(t, ctx)
 
 			// 作用于清理过期缓存
-			go func(t *CacheTable, c context.Context) {
+			go func(t *CacheTable, ctx context.Context) {
 				for {
 					select {
 					case <-ctx.Done():
 						t.Stop()
+						return
 					case key := <-t.deleteChan:
 						t.deleteInternal(key)
 					}
