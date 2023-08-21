@@ -10,7 +10,11 @@ package cache2go
 
 import (
 	"context"
+	"fmt"
+	"runtime"
+	"runtime/debug"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -18,6 +22,28 @@ var (
 	cache = make(map[string]*CacheTable)
 	mutex sync.RWMutex
 )
+
+func Init(ctx context.Context) {
+	go func() {
+		gcTicker := time.NewTicker(4 * time.Second)
+		for {
+			select {
+			case <-ctx.Done():
+				gcTicker.Stop()
+				return
+			case <-gcTicker.C:
+				//fmt.Printf("[before] %s\n", traceMemStats())
+				runtime.GC()
+				debug.FreeOSMemory()
+				//fmt.Printf("[after] %s\n", traceMemStats())
+				fmt.Println(time.Now().Unix(), "GC")
+				time.Sleep(5 * time.Second)
+			}
+		}
+	}()
+
+	fmt.Println(time.Now().Unix(), "运行")
+}
 
 // Cache returns the existing cache table with given name or creates a new one
 // if the table does not exist yet.
@@ -32,65 +58,195 @@ func Cache(ctx context.Context, table string, shardNum int, cleanInterval time.D
 		// Double check whether the table exists or not.
 		if !ok {
 			t = &CacheTable{
-				name:               table,
-				expireByCreateTime: true,
-				hash:               newDefaultHasher(),
-				shards:             make([]shard, shardNum),
-				shardLock:          make([]sync.RWMutex, shardNum),
-				shardMask:          uint64(shardNum - 1),
-				deleteChan:         make(chan interface{}, 1024*10*5),
-				cleanupInterval:    cleanInterval,
+				name:            table,
+				hash:            newDefaultHasher(),
+				L1Shards:        make(shardItems, shardNum),
+				L2Shards:        make(shardItems, shardNum),
+				shardMask:       uint64(shardNum - 1),
+				cleanupInterval: cleanInterval,
 			}
 
 			for i := 0; i < shardNum; i++ {
-				t.shards[i] = make(map[interface{}]*CacheItem)
+				t.L1Shards[i] = newShardItem()
+				t.L2Shards[i] = newShardItem()
 			}
 
 			// 定时清理过期缓存
 			go func(t *CacheTable, ctx context.Context) {
 				ticker := time.NewTicker(cleanInterval)
-				reBundleTicker := time.NewTicker(30 * time.Minute)
+				reBuildTicker := time.NewTicker(10 * time.Second)
 				for {
 					select {
 					case <-ctx.Done():
 						ticker.Stop()
-						reBundleTicker.Stop()
+						reBuildTicker.Stop()
 						return
 					case <-ticker.C:
+						fmt.Println(time.Now().Unix(), "clean-before")
+						t.Lock()
+						// 扫描需要删除的key
+						var deleteList []*CacheItem
+
+						// 先处理l1，再处理l2
+						t.switchMask = 1 << 1
 						now := time.Now()
-						for i, sad := range t.shards {
-							t.shardLock[i].RLock()
-							for key, r := range sad {
+
+						// 处理l1
+						// 不允许l1读写入，读写通过l2
+
+						fmt.Println(time.Now().Unix(), "l1mask-before")
+						for {
+							if atomic.LoadInt32(&t.l1Mask) == 0 {
+								break
+							}
+						}
+						fmt.Println(time.Now().Unix(), "l1mask-after")
+
+						fmt.Println(time.Now().Unix(), "l1 - delete-before")
+						for _, sad := range t.L1Shards {
+							sad.lock.RLock()
+							for _, r := range sad.m {
 								if now.Sub(r.createdOn).Seconds() > r.lifeSpan.Seconds() {
-									t.deleteChan <- key
+									deleteList = append(deleteList, r)
 								}
 							}
-							t.shardLock[i].RUnlock()
+							sad.lock.RUnlock()
 						}
-					case <-reBundleTicker.C:
+						fmt.Println(time.Now().Unix(), "l1 - delete-middle")
+						// 开始删除
+						for _, item := range deleteList {
+							t.L1Shards[item.hashedKey&t.shardMask].lock.Lock()
+							delete(t.L1Shards[item.hashedKey&t.shardMask].m, item.key)
+							t.L1Shards[item.hashedKey&t.shardMask].lock.Unlock()
+						}
+						fmt.Println(time.Now().Unix(), "l1 - delete-after")
+
+						deleteList = make([]*CacheItem, 0)
+
+						// 处理l2
+						t.switchMask = 1 << 2
+
+						// 堵塞的item加回来
+						l1Length := len(t.l1BlockChan)
+						for _, item := range t.l1BlockChan {
+							//fmt.Println(t.L1Shards[item.hashedKey&t.shardMask])
+							if item != nil {
+								t.L1Shards[item.hashedKey&t.shardMask].lock.Lock()
+								t.L1Shards[item.hashedKey&t.shardMask].m[item.key] = item
+								t.L1Shards[item.hashedKey&t.shardMask].lock.Unlock()
+							}
+						}
+
+						// 重置l1BlockChan
+						t.l1BlockChan = make([]*CacheItem, 0, l1Length/2)
+
+						fmt.Println(time.Now().Unix(), "l2mask-before")
+						// 不允许l2读写入，读写通过l1
+						for {
+							if atomic.LoadInt32(&t.l2Mask) == 0 {
+								break
+							}
+						}
+						fmt.Println(time.Now().Unix(), "l2mask-after")
+
+						fmt.Println(time.Now().Unix(), "l2 - delete-before")
+						for _, sad := range t.L2Shards {
+							sad.lock.RLock()
+							for _, r := range sad.m {
+								if now.Sub(r.createdOn).Seconds() > r.lifeSpan.Seconds() {
+									deleteList = append(deleteList, r)
+								}
+							}
+							sad.lock.RUnlock()
+						}
+						fmt.Println(time.Now().Unix(), "l2 - delete-middle")
+
+						// 开始删除
+						for _, item := range deleteList {
+							t.L2Shards[item.hashedKey&t.shardMask].lock.Lock()
+							delete(t.L2Shards[item.hashedKey&t.shardMask].m, item.key)
+							t.L2Shards[item.hashedKey&t.shardMask].lock.Unlock()
+						}
+						fmt.Println(time.Now().Unix(), "l2 - delete-after")
+
+						// 恢复正常
+						t.switchMask = 1 >> 1
+
+						fmt.Println(time.Now().Unix(), "l2-b - add-before")
+
+						l2Length := len(t.l2BlockChan)
+						for _, item := range t.l2BlockChan {
+							//fmt.Println(t.L1Shards[item.hashedKey&t.shardMask])
+							if item != nil {
+								t.L2Shards[item.hashedKey&t.shardMask].lock.Lock()
+								t.L2Shards[item.hashedKey&t.shardMask].m[item.key] = item
+								t.L2Shards[item.hashedKey&t.shardMask].lock.Unlock()
+							}
+						}
+
+						fmt.Println(time.Now().Unix(), "l2-b - add-after")
+
+						// 重置l2BlockChan
+						t.l2BlockChan = make([]*CacheItem, 0, l2Length/2)
+
+						t.Unlock()
+						fmt.Println(time.Now().Unix(), "clean-after")
+
+					case <-reBuildTicker.C:
+						fmt.Println(time.Now().Unix(), "rebuild-before")
+						t.Lock()
 						// 为了释放map内存
-						for i, sad := range t.shards {
-							t.shardLock[i].Lock()
-							nm := make(shard, len(sad))
-							for key, r := range sad {
+
+						// 先处理l1，再处理l2
+						t.switchMask = 1 << 1
+
+						// 处理l1
+						// 不允许l1读写入，读写通过l2
+						fmt.Println(time.Now().Unix(), "l1-rebuild-before")
+						for {
+							if atomic.LoadInt32(&t.l1Mask) == 0 {
+								break
+							}
+						}
+
+						fmt.Println(time.Now().Unix(), "l1-rebuild-after")
+
+						for _, sad := range t.L1Shards {
+							sad.lock.Lock()
+							nm := make(shard, len(sad.m))
+							for key, r := range sad.m {
 								nm[key] = r
 							}
-							t.shards[i] = nm
-							t.shardLock[i].Unlock()
+							sad.m = nm
+							sad.lock.Unlock()
 						}
-					}
-				}
-			}(t, ctx)
 
-			// 作用于清理过期缓存
-			go func(t *CacheTable, ctx context.Context) {
-				for {
-					select {
-					case <-ctx.Done():
-						t.Stop()
-						return
-					case key := <-t.deleteChan:
-						t.deleteInternal(key)
+						fmt.Println(time.Now().Unix(), "l2-rebuild-before")
+						// 先处理l1，再处理l2
+						t.switchMask = 1 << 2
+						for {
+							if atomic.LoadInt32(&t.l2Mask) == 0 {
+								break
+							}
+						}
+
+						fmt.Println(time.Now().Unix(), "l2-rebuild-after")
+
+						for _, sad := range t.L2Shards {
+							sad.lock.Lock()
+							nm := make(shard, len(sad.m))
+							for key, r := range sad.m {
+								nm[key] = r
+							}
+							sad.m = nm
+							sad.lock.Unlock()
+						}
+
+						// 恢复正常
+						t.switchMask = 1 >> 1
+
+						t.Unlock()
+						fmt.Println(time.Now().Unix(), "rebuild-after")
 					}
 				}
 			}(t, ctx)

@@ -11,11 +11,25 @@ import (
 	"encoding/json"
 	"log"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unsafe"
 )
 
 type shard map[interface{}]*CacheItem
+
+type shardItem struct {
+	m    map[interface{}]*CacheItem
+	lock sync.RWMutex
+}
+
+func newShardItem() *shardItem {
+	return &shardItem{
+		m: make(shard),
+	}
+}
+
+type shardItems []*shardItem
 
 // CacheTable is a table within the cache
 type CacheTable struct {
@@ -25,11 +39,9 @@ type CacheTable struct {
 
 	// The table's name.
 	name string
-	// All cached items.
-	//items map[interface{}]*CacheItem
 
-	shards    []shard
-	shardLock []sync.RWMutex
+	L1Shards  shardItems
+	L2Shards  shardItems
 	shardMask uint64
 
 	// Timer responsible for triggering cleanup.
@@ -40,13 +52,14 @@ type CacheTable struct {
 	// The logger used for this table.
 	logger *log.Logger
 
-	// Callback method triggered when adding a new item to the cache.
-	addedItem []func(item *CacheItem)
-	// expire check by createdtime
-	expireByCreateTime bool
+	l1BlockChan []*CacheItem // key
+	l2BlockChan []*CacheItem // key
+	isStop      bool
 
-	deleteChan chan interface{} // key
-	isStop     bool
+	l1Mask int32
+	l2Mask int32
+
+	switchMask uint8
 }
 
 // SetLogger sets the logger to be used by this cache table.
@@ -56,85 +69,96 @@ func (table *CacheTable) SetLogger(logger *log.Logger) {
 	table.logger = logger
 }
 
-func (table *CacheTable) addInternal(item *CacheItem) {
-	table.log("Adding item with key", item.key, "and lifespan of", item.lifeSpan, "to table", table.name)
-	keyBytes, _ := json.Marshal(item.key)
-	hashedKey := table.hash.Sum64(Bytes2String(keyBytes))
-	shardTable := table.getShard(hashedKey)
-	lock := table.getShardLock(hashedKey)
-	lock.Lock()
-	shardTable[item.key] = item
-	lock.Unlock()
-}
+//// Delete an item from the cache.
+//func (table *CacheTable) Delete(key interface{}) (*CacheItem, error) {
+//	keyBytes, _ := json.Marshal(key)
+//	hashedKey := globalHasher.Sum64(Bytes2String(keyBytes))
+//
+//}
 
-// Add adds a key/value pair to the cache.
-// Parameter key is the item's cache-key.
-// Parameter lifeSpan determines after which time period without an access the item
-// will get removed from the cache.
-// Parameter data is the item's value.
 func (table *CacheTable) Add(key interface{}, lifeSpan time.Duration, data interface{}) *CacheItem {
 	item := NewCacheItem(key, lifeSpan, data)
 
-	table.addInternal(item)
+	if table.switchMask != 1<<1 {
+		atomic.AddInt32(&table.l1Mask, 1)
+		defer atomic.AddInt32(&table.l1Mask, -1)
+		table.L1Shards[item.hashedKey&table.shardMask].lock.Lock()
+		table.L1Shards[item.hashedKey&table.shardMask].m[item.key] = item
+		table.L1Shards[item.hashedKey&table.shardMask].lock.Unlock()
+	} else {
+		table.l1BlockChan = append(table.l1BlockChan, item)
+	}
+
+	if table.switchMask != 1<<2 {
+		atomic.AddInt32(&table.l2Mask, 1)
+		defer atomic.AddInt32(&table.l2Mask, -1)
+		table.L2Shards[item.hashedKey&table.shardMask].lock.Lock()
+		table.L2Shards[item.hashedKey&table.shardMask].m[item.key] = item
+		table.L2Shards[item.hashedKey&table.shardMask].lock.Unlock()
+	} else {
+		table.l2BlockChan = append(table.l2BlockChan, item)
+	}
 
 	return item
 }
 
-func (table *CacheTable) getShard(hashedKey uint64) (shard shard) {
-	lock := table.getShardLock(hashedKey)
-	lock.RLock()
-	defer lock.RUnlock()
-
-	return table.shards[hashedKey&table.shardMask]
-}
-
-func (table *CacheTable) getShardLock(hashedKey uint64) (lock *sync.RWMutex) {
-	return &table.shardLock[hashedKey&table.shardMask]
-}
-
-func (table *CacheTable) deleteInternal(key interface{}) (*CacheItem, error) {
-	keyBytes, _ := json.Marshal(key)
-	hashedKey := table.hash.Sum64(Bytes2String(keyBytes))
-	shardTable := table.getShard(hashedKey)
-	lock := table.getShardLock(hashedKey)
-	lock.RLock()
-	r, ok := shardTable[key]
-	lock.RUnlock()
-	if !ok {
-		return nil, ErrKeyNotFound
-	}
-
-	lock.Lock()
-	defer lock.Unlock()
-	table.log("Deleting item with key", key, "created on", r.createdOn, "and hit", r.accessCount, "times from table", table.name)
-	delete(shardTable, key)
-
-	return r, nil
-}
-
-// Delete an item from the cache.
-func (table *CacheTable) Delete(key interface{}) (*CacheItem, error) {
-	return table.deleteInternal(key)
-}
-
-// Value returns an item from the cache and marks it to be kept alive. You can
-// pass additional arguments to your DataLoader callback function.
 func (table *CacheTable) Value(key interface{}, args ...interface{}) (*CacheItem, error) {
 	keyBytes, _ := json.Marshal(key)
 	hashedKey := table.hash.Sum64(Bytes2String(keyBytes))
-	shardTable := table.getShard(hashedKey)
-	lock := table.getShardLock(hashedKey)
-	lock.RLock()
-	r, ok := shardTable[key]
-	lock.RUnlock()
+	var sm *shardItem
+	if table.switchMask == 1>>1 {
+		// 先查l1
+		sm = table.L1Shards[hashedKey&table.shardMask]
+		sm.lock.RLock()
+		r, ok := sm.m[key]
+		sm.lock.RUnlock()
 
-	if ok {
-		// 正常返回结果
-		return r, nil
+		if ok {
+			// 正常返回结果
+			return r, nil
+		}
+
+		// 再查l2
+		sm = table.L2Shards[hashedKey&table.shardMask]
+		sm.lock.RLock()
+		r, ok = sm.m[key]
+		sm.lock.RUnlock()
+
+		if ok {
+			// 正常返回结果
+			return r, nil
+		}
+
+		// 找不到key
+		return nil, ErrKeyNotFound
+
+	} else if table.switchMask == 1<<1 {
+		// 正在处理l1，需要从l2读
+		sm = table.L2Shards[hashedKey&table.shardMask]
+		sm.lock.RLock()
+		r, ok := sm.m[key]
+		sm.lock.RUnlock()
+		if ok {
+			// 正常返回结果
+			return r, nil
+		}
+		// 找不到key
+		return nil, ErrKeyNotFound
+	} else {
+		// 正在处理l2，需要从l1读
+		sm = table.L1Shards[hashedKey&table.shardMask]
+		sm.lock.RLock()
+		r, ok := sm.m[key]
+		sm.lock.RUnlock()
+
+		if ok {
+			// 正常返回结果
+			return r, nil
+		}
+
+		// 找不到key
+		return nil, ErrKeyNotFound
 	}
-
-	// 找不到key
-	return nil, ErrKeyNotFound
 }
 
 // Internal logging method for convenience.
@@ -144,15 +168,6 @@ func (table *CacheTable) log(v ...interface{}) {
 	}
 
 	table.logger.Println(v...)
-}
-
-func (table *CacheTable) Stop() {
-	table.Lock()
-	defer table.Unlock()
-	if !table.isStop {
-		close(table.deleteChan)
-		table.isStop = true
-	}
 }
 
 func Bytes2String(b []byte) string {
