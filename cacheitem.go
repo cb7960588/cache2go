@@ -48,7 +48,7 @@ type CacheItem struct {
 func NewCacheItem(key interface{}, lifeSpan time.Duration, data interface{}) *CacheItem {
 	t := time.Now()
 	keyBytes, _ := json.Marshal(key)
-	hashedKey := globalHasher.Sum64(Bytes2String(keyBytes))
+	hashedKey := globalHasher.Sum64(string(keyBytes))
 	return &CacheItem{
 		key:           key,
 		lifeSpan:      lifeSpan,

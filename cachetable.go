@@ -13,7 +13,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	"unsafe"
 )
 
 type shard map[interface{}]*CacheItem
@@ -104,7 +103,7 @@ func (table *CacheTable) Add(key interface{}, lifeSpan time.Duration, data inter
 
 func (table *CacheTable) Value(key interface{}, args ...interface{}) (*CacheItem, error) {
 	keyBytes, _ := json.Marshal(key)
-	hashedKey := table.hash.Sum64(Bytes2String(keyBytes))
+	hashedKey := table.hash.Sum64(string(keyBytes))
 	var sm *shardItem
 	if table.switchMask == 1>>1 {
 		// 先查l1
@@ -168,8 +167,4 @@ func (table *CacheTable) log(v ...interface{}) {
 	}
 
 	table.logger.Println(v...)
-}
-
-func Bytes2String(b []byte) string {
-	return *(*string)(unsafe.Pointer(&b))
 }
