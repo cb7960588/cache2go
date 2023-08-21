@@ -74,7 +74,7 @@ func Cache(ctx context.Context, table string, shardNum int, cleanInterval time.D
 			// 定时清理过期缓存
 			go func(t *CacheTable, ctx context.Context) {
 				ticker := time.NewTicker(cleanInterval)
-				reBuildTicker := time.NewTicker(10 * time.Second)
+				reBuildTicker := time.NewTicker(30 * time.Minute)
 				for {
 					select {
 					case <-ctx.Done():
