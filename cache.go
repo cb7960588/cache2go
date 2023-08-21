@@ -82,7 +82,7 @@ func Cache(ctx context.Context, table string, shardNum int, cleanInterval time.D
 						reBuildTicker.Stop()
 						return
 					case <-ticker.C:
-						fmt.Println(time.Now().Unix(), "clean-before")
+						fmt.Println(t.name, time.Now().Unix(), "clean-before")
 						t.Lock()
 						// 扫描需要删除的key
 						var deleteList []*CacheItem
@@ -94,32 +94,35 @@ func Cache(ctx context.Context, table string, shardNum int, cleanInterval time.D
 						// 处理l1
 						// 不允许l1读写入，读写通过l2
 
-						fmt.Println(time.Now().Unix(), "l1mask-before")
+						fmt.Println(t.name, time.Now().Unix(), "l1mask-before")
 						for {
 							if atomic.LoadInt32(&t.l1Mask) == 0 {
 								break
 							}
 						}
-						fmt.Println(time.Now().Unix(), "l1mask-after")
+						fmt.Println(t.name, time.Now().Unix(), "l1mask-after")
 
-						fmt.Println(time.Now().Unix(), "l1 - delete-before")
-						for _, sad := range t.L1Shards {
+						fmt.Println(t.name, time.Now().Unix(), "l1 - delete-before")
+						for i, sad := range t.L1Shards {
+							c := 0
 							sad.lock.RLock()
 							for _, r := range sad.m {
 								if now.Sub(r.createdOn).Seconds() > r.lifeSpan.Seconds() {
 									deleteList = append(deleteList, r)
 								}
+								c++
 							}
 							sad.lock.RUnlock()
+							fmt.Println(t.name, time.Now().Unix(), fmt.Sprintf("l1-shards[%d] [len=%d]", i, c))
 						}
-						fmt.Println(time.Now().Unix(), "l1 - delete-middle")
+						fmt.Println(t.name, time.Now().Unix(), "l1 - delete-middle")
 						// 开始删除
 						for _, item := range deleteList {
 							t.L1Shards[item.hashedKey&t.shardMask].lock.Lock()
 							delete(t.L1Shards[item.hashedKey&t.shardMask].m, item.key)
 							t.L1Shards[item.hashedKey&t.shardMask].lock.Unlock()
 						}
-						fmt.Println(time.Now().Unix(), "l1 - delete-after")
+						fmt.Println(t.name, time.Now().Unix(), "l1 - delete-after")
 
 						deleteList = make([]*CacheItem, 0)
 
@@ -129,7 +132,7 @@ func Cache(ctx context.Context, table string, shardNum int, cleanInterval time.D
 						// 堵塞的item加回来
 						l1Length := len(t.l1BlockChan)
 						for _, item := range t.l1BlockChan {
-							//fmt.Println(t.L1Shards[item.hashedKey&t.shardMask])
+							//fmt.Println(t.name, t.L1Shards[item.hashedKey&t.shardMask])
 							if item != nil {
 								t.L1Shards[item.hashedKey&t.shardMask].lock.Lock()
 								t.L1Shards[item.hashedKey&t.shardMask].m[item.key] = item
@@ -140,26 +143,29 @@ func Cache(ctx context.Context, table string, shardNum int, cleanInterval time.D
 						// 重置l1BlockChan
 						t.l1BlockChan = make([]*CacheItem, 0, l1Length/2)
 
-						fmt.Println(time.Now().Unix(), "l2mask-before")
+						fmt.Println(t.name, time.Now().Unix(), "l2mask-before")
 						// 不允许l2读写入，读写通过l1
 						for {
 							if atomic.LoadInt32(&t.l2Mask) == 0 {
 								break
 							}
 						}
-						fmt.Println(time.Now().Unix(), "l2mask-after")
+						fmt.Println(t.name, time.Now().Unix(), "l2mask-after")
 
-						fmt.Println(time.Now().Unix(), "l2 - delete-before")
-						for _, sad := range t.L2Shards {
+						fmt.Println(t.name, time.Now().Unix(), "l2 - delete-before")
+						for i, sad := range t.L2Shards {
+							c := 0
 							sad.lock.RLock()
 							for _, r := range sad.m {
 								if now.Sub(r.createdOn).Seconds() > r.lifeSpan.Seconds() {
 									deleteList = append(deleteList, r)
 								}
+								c++
 							}
 							sad.lock.RUnlock()
+							fmt.Println(t.name, time.Now().Unix(), fmt.Sprintf("l2-shards[%d] [len=%d]", i, c))
 						}
-						fmt.Println(time.Now().Unix(), "l2 - delete-middle")
+						fmt.Println(t.name, time.Now().Unix(), "l2 - delete-middle")
 
 						// 开始删除
 						for _, item := range deleteList {
@@ -167,16 +173,16 @@ func Cache(ctx context.Context, table string, shardNum int, cleanInterval time.D
 							delete(t.L2Shards[item.hashedKey&t.shardMask].m, item.key)
 							t.L2Shards[item.hashedKey&t.shardMask].lock.Unlock()
 						}
-						fmt.Println(time.Now().Unix(), "l2 - delete-after")
+						fmt.Println(t.name, time.Now().Unix(), "l2 - delete-after")
 
 						// 恢复正常
 						t.switchMask = 1 >> 1
 
-						fmt.Println(time.Now().Unix(), "l2-b - add-before")
+						fmt.Println(t.name, time.Now().Unix(), "l2-b - add-before")
 
 						l2Length := len(t.l2BlockChan)
 						for _, item := range t.l2BlockChan {
-							//fmt.Println(t.L1Shards[item.hashedKey&t.shardMask])
+							//fmt.Println(t.name, t.L1Shards[item.hashedKey&t.shardMask])
 							if item != nil {
 								t.L2Shards[item.hashedKey&t.shardMask].lock.Lock()
 								t.L2Shards[item.hashedKey&t.shardMask].m[item.key] = item
@@ -184,44 +190,48 @@ func Cache(ctx context.Context, table string, shardNum int, cleanInterval time.D
 							}
 						}
 
-						fmt.Println(time.Now().Unix(), "l2-b - add-after")
+						fmt.Println(t.name, time.Now().Unix(), "l2-b - add-after")
 
 						// 重置l2BlockChan
 						t.l2BlockChan = make([]*CacheItem, 0, l2Length/2)
 
 						t.Unlock()
-						fmt.Println(time.Now().Unix(), "clean-after")
+						fmt.Println(t.name, time.Now().Unix(), "clean-after")
 
 					case <-reBuildTicker.C:
-						fmt.Println(time.Now().Unix(), "rebuild-before")
+						fmt.Println(t.name, time.Now().Unix(), "rebuild-before")
 						t.Lock()
 						// 为了释放map内存
 
 						// 先处理l1，再处理l2
 						t.switchMask = 1 << 1
+						now := time.Now()
 
 						// 处理l1
 						// 不允许l1读写入，读写通过l2
-						fmt.Println(time.Now().Unix(), "l1-rebuild-before")
+						fmt.Println(t.name, time.Now().Unix(), "l1-rebuild-before")
 						for {
 							if atomic.LoadInt32(&t.l1Mask) == 0 {
 								break
 							}
 						}
 
-						fmt.Println(time.Now().Unix(), "l1-rebuild-after")
+						fmt.Println(t.name, time.Now().Unix(), "l1-rebuild-after")
 
 						for _, sad := range t.L1Shards {
 							sad.lock.Lock()
 							nm := make(shard, len(sad.m))
 							for key, r := range sad.m {
-								nm[key] = r
+								if now.Sub(r.createdOn).Seconds() < r.lifeSpan.Seconds() {
+									nm[key] = r
+								}
 							}
+							sad.m = nil
 							sad.m = nm
 							sad.lock.Unlock()
 						}
 
-						fmt.Println(time.Now().Unix(), "l2-rebuild-before")
+						fmt.Println(t.name, time.Now().Unix(), "l2-rebuild-before")
 						// 先处理l1，再处理l2
 						t.switchMask = 1 << 2
 						for {
@@ -230,14 +240,17 @@ func Cache(ctx context.Context, table string, shardNum int, cleanInterval time.D
 							}
 						}
 
-						fmt.Println(time.Now().Unix(), "l2-rebuild-after")
+						fmt.Println(t.name, time.Now().Unix(), "l2-rebuild-after")
 
 						for _, sad := range t.L2Shards {
 							sad.lock.Lock()
 							nm := make(shard, len(sad.m))
 							for key, r := range sad.m {
-								nm[key] = r
+								if now.Sub(r.createdOn).Seconds() < r.lifeSpan.Seconds() {
+									nm[key] = r
+								}
 							}
+							sad.m = nil
 							sad.m = nm
 							sad.lock.Unlock()
 						}
@@ -245,8 +258,12 @@ func Cache(ctx context.Context, table string, shardNum int, cleanInterval time.D
 						// 恢复正常
 						t.switchMask = 1 >> 1
 
+						fmt.Println(t.name, time.Now().Unix(), "gc")
+						runtime.GC()
+						fmt.Println(t.name, time.Now().Unix(), "release")
+						debug.FreeOSMemory()
 						t.Unlock()
-						fmt.Println(time.Now().Unix(), "rebuild-after")
+						fmt.Println(t.name, time.Now().Unix(), "rebuild-after")
 					}
 				}
 			}(t, ctx)
