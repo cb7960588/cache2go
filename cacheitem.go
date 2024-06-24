@@ -8,9 +8,12 @@
 package cache2go
 
 import (
+	"encoding/json"
 	"sync"
 	"time"
 )
+
+var globalHasher = newDefaultHasher()
 
 // CacheItem is an individual cache item
 // Parameter data contains the user-set value in the cache.
@@ -33,6 +36,8 @@ type CacheItem struct {
 
 	// Callback method triggered right before removing the item from the cache
 	aboutToExpire []func(key interface{})
+
+	hashedKey uint64
 }
 
 // NewCacheItem returns a newly created CacheItem.
@@ -42,6 +47,8 @@ type CacheItem struct {
 // Parameter data is the item's value.
 func NewCacheItem(key interface{}, lifeSpan time.Duration, data interface{}) *CacheItem {
 	t := time.Now()
+	keyBytes, _ := json.Marshal(key)
+	hashedKey := globalHasher.Sum64(string(keyBytes))
 	return &CacheItem{
 		key:           key,
 		lifeSpan:      lifeSpan,
@@ -50,6 +57,7 @@ func NewCacheItem(key interface{}, lifeSpan time.Duration, data interface{}) *Ca
 		accessCount:   0,
 		aboutToExpire: nil,
 		data:          data,
+		hashedKey:     hashedKey,
 	}
 }
 

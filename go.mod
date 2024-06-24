@@ -1,3 +1,3 @@
-module github.com/cb7960588/cache2go
+module github.com/whiteCcinn/cache2go
 
-go 1.15
+go 1.17
